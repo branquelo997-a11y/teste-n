@@ -16,7 +16,7 @@ app = Flask(__name__)
 # ==============================
 
 GAME_ID = os.environ.get("GAME_ID", "109983668079237")
-BASE_URL = f"https://games.roblox.com/v1/games/{GAME_ID}/servers/Public?limit=100"
+BASE_URL = f"https://games.roblox.com/v1/games/{GAME_ID}/servers/Public?sortOrder=Asc&limit=100"
 
 MAIN_API_URL = os.environ.get("MAIN_API_URL", "")
 
