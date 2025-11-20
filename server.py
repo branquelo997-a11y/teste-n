@@ -19,18 +19,17 @@ GAME_ID = os.environ.get("GAME_ID", "109983668079237")
 BASE_URL = f"https://games.roblox.com/v1/games/{GAME_ID}/servers/Public?sortOrder=Asc&limit=100"
 MAIN_API_URL = os.environ.get("MAIN_API_URL", "https://main-jobid-production.up.railway.app/add-pool")
 
-SEND_INTERVAL = int(os.environ.get("SEND_INTERVAL", "30"))
+SEND_INTERVAL = int(os.environ.get("SEND_INTERVAL", "10"))
 REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "10"))
 SEND_MIN_SERVERS = int(os.environ.get("SEND_MIN_SERVERS", "1"))
-MAX_PAGES_PER_CYCLE = int(os.environ.get("MAX_PAGES_PER_CYCLE", "10"))
 
-# 👉 NOVO: filtro de players
+# 🔥 FAIXA DE PÁGINAS PARA CADA INSTÂNCIA
+SKIP_PAGES = int(os.environ.get("SKIP_PAGES", "0"))
+MAX_PAGES_PER_CYCLE = int(os.environ.get("MAX_PAGES_PER_CYCLE", "50"))
+
+# FILTRO DE PLAYERS
 MIN_PLAYERS = int(os.environ.get("MIN_PLAYERS", "0"))
 MAX_PLAYERS = int(os.environ.get("MAX_PLAYERS", "999"))
-
-# 👉 NOVO: PÁGINAS PARA PULAR
-SKIP_PAGES = int(os.environ.get("SKIP_PAGES", "250"))
-
 
 # ==============================
 # PROXIES
@@ -66,7 +65,7 @@ else:
 
 
 # ==============================
-# FETCH SERVERS
+# FETCH SERVERS (FAIXA CONTROLADA)
 # ==============================
 
 def fetch_all_roblox_servers(retries=3):
@@ -75,9 +74,6 @@ def fetch_all_roblox_servers(retries=3):
     page_count = 0
     proxy_index = 0
 
-    # ==============================
-    # NOVO: PRIMEIRO SKIP DE 250 PÁGINAS
-    # ==============================
     skip_done = False
 
     while True:
@@ -88,12 +84,11 @@ def fetch_all_roblox_servers(retries=3):
             url = BASE_URL + (f"&cursor={cursor}" if cursor else "")
             page_count += 1
 
-            if not skip_done and page_count <= SKIP_PAGES:
-                logging.info(f"[SKIP] Pulando página {page_count}/{SKIP_PAGES} via {proxy or 'sem proxy'}...")
-
+            # ⛔ AINDA PULANDO AS PRIMEIRAS SKIP_PAGES
+            if page_count <= SKIP_PAGES:
+                logging.info(f"[SKIP] Página {page_count}/{SKIP_PAGES} via {proxy or 'sem proxy'}")
             else:
-                skip_done = True
-                logging.info(f"[FETCH] Página {page_count - SKIP_PAGES} (coletando) via {proxy or 'sem proxy'}...")
+                logging.info(f"[FETCH] Página real {page_count - SKIP_PAGES} via {proxy or 'sem proxy'}")
 
             r = requests.get(url, proxies=proxies, timeout=REQUEST_TIMEOUT)
 
@@ -107,15 +102,20 @@ def fetch_all_roblox_servers(retries=3):
             cursor = data.get("nextPageCursor")
             servers = data.get("data", [])
 
-            # só adiciona se NÃO estiver skipando
-            if skip_done:
+            if page_count > SKIP_PAGES:
                 all_servers.extend(servers)
-                logging.info(f"[PAGE {page_count - SKIP_PAGES}] +{len(servers)} servers (Total: {len(all_servers)})")
+                logging.info(f"[ADD] +{len(servers)} servidores (Total: {len(all_servers)})")
 
-            if not cursor or (skip_done and page_count - SKIP_PAGES >= MAX_PAGES_PER_CYCLE):
+            # PARAR QUANDO CHEGAR NA FAIXA DEFINIDA
+            if cursor is None:
+                logging.info("[END] Última página encontrada. Parou.")
                 break
 
-            time.sleep(0.5)
+            if page_count - SKIP_PAGES >= MAX_PAGES_PER_CYCLE:
+                logging.info("[END] Limite de páginas dessa instância atingido.")
+                break
+
+            time.sleep(0.1)
 
         except requests.exceptions.RequestException as e:
             logging.warning(f"[ERRO] Proxy {proxy or 'sem proxy'} falhou: {e}")
@@ -134,36 +134,28 @@ def fetch_all_roblox_servers(retries=3):
 def fetch_and_send():
     while True:
         servers = fetch_all_roblox_servers()
-        total_servers = len(servers)
 
         if not servers:
             logging.warning("⚠️ Nenhum servidor encontrado.")
             time.sleep(SEND_INTERVAL)
             continue
 
-        # FILTRO POR PLAYERS
         job_ids = [
             s["id"]
             for s in servers
             if "id" in s and MIN_PLAYERS <= s.get("playing", 0) <= MAX_PLAYERS
         ]
 
-        logging.info(f"[FILTER] {len(job_ids)} servers após filtro ({MIN_PLAYERS}–{MAX_PLAYERS})")
-
-        if len(job_ids) < SEND_MIN_SERVERS:
-            logging.info(f"[SKIP] Apenas {len(job_ids)} válidos (mínimo: {SEND_MIN_SERVERS}).")
-            time.sleep(SEND_INTERVAL)
-            continue
+        logging.info(f"[FILTER] {len(job_ids)} servers após filtro")
 
         payload = {"servers": job_ids}
 
         try:
             resp = requests.post(MAIN_API_URL, json=payload, timeout=REQUEST_TIMEOUT)
             if resp.ok:
-                added = resp.json().get("added", None)
-                logging.info(f"✅ Enviados {len(job_ids)} — adicionados: {added}")
+                logging.info(f"✅ Enviados {len(job_ids)} IDs")
             else:
-                logging.warning(f"⚠️ MAIN retornou {resp.status_code}: {resp.text}")
+                logging.warning(f"MAIN retornou {resp.status_code}: {resp.text}")
 
         except Exception as e:
             logging.exception(f"❌ Erro ao enviar para MAIN: {e}")
@@ -171,7 +163,6 @@ def fetch_and_send():
         time.sleep(SEND_INTERVAL)
 
 
-# Thread do loop
 threading.Thread(target=fetch_and_send, daemon=True).start()
 
 
@@ -183,22 +174,12 @@ threading.Thread(target=fetch_and_send, daemon=True).start()
 def home():
     return jsonify({
         "status": "mini API running",
-        "proxy_count": len(PROXIES),
-        "game_id": GAME_ID,
-        "target_api": MAIN_API_URL,
         "skip_pages": SKIP_PAGES,
-        "send_min_servers": SEND_MIN_SERVERS,
-        "max_pages_per_cycle": MAX_PAGES_PER_CYCLE,
-        "min_players": MIN_PLAYERS,
-        "max_players": MAX_PLAYERS
+        "max_pages_per_cycle": MAX_PAGES_PER_CYCLE
     })
 
 
-# ==============================
-# RUN
-# ==============================
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8001))
-    logging.info(f"Mini API rodando na porta {port} | SKIP={SKIP_PAGES} páginas")
+    logging.info(f"API rodando na porta {port}")
     app.run(host="0.0.0.0", port=port, debug=False)
